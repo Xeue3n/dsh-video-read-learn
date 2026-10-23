@@ -1,0 +1,21 @@
+# 依赖与构建产物
+node_modules/
+.venv/
+__pycache__/
+*.pyc
+
+# 本地产物
+*.zip
+*.log
+.vscode/
+.idea/
+
+# 视频/模型等大文件绝不入库
+*.mp4
+*.m4a
+*.bin
+*.onnx
+
+# 系统噪音
+.DS_Store
+Thumbs.db

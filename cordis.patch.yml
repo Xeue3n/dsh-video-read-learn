@@ -1,0 +1,15 @@
+# 视频精读（dsh-video-read-learn）
+# 十个工具，覆盖画面 / 字幕 / 音频三条通道。
+# 在线源目前仅支持哔哩哔哩；本地视频文件同样可用。
+#
+# config 可填（都可省略）：
+#   pythonPath:  带 numpy + Pillow 的解释器绝对路径；留空自动探测 DSH runtime 的 Python
+#   workDir:     抽帧产物目录，默认 ~/.dsh/video-read
+#   whisperDir:  本地 whisper.cpp 目录（可选，作为 ASR 兜底）
+#   cookieFile:  B站登录态文件（一行 SESSDATA=...）；默认 ~/.dsh/bili-sessdata.txt
+#
+# 也可以不改这里，直接设环境变量：DSH_VIDEO_PYTHON / BILI_SESSDATA。
+- insert:
+    - id: dsh-video-read-learn
+      name: dsh-video-read-learn
+      config: {}

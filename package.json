@@ -1,0 +1,38 @@
+{
+  "name": "dsh-video-read-learn",
+  "version": "0.9.0",
+  "private": true,
+  "description": "DSH 插件 · 视频精读：抽帧、提取字幕、音频转写三通道，把视频读成可简易参考的流程",
+  "type": "module",
+  "main": "index.js",
+  "exports": {
+    ".": "./index.js",
+    "./locale/*.json": "./locale/*.json",
+    "./icon": "./icon.svg"
+  },
+  "files": [
+    "index.js",
+    "cordis.patch.yml",
+    "scripts/video_engine.py",
+    "templates/TUTORIAL_DOC.md",
+    "locale/*.json",
+    "icon.svg",
+    "README.md",
+    "CHANGELOG.md"
+  ],
+  "dsh": {
+    "bundle": {
+      "patch": "./cordis.patch.yml"
+    }
+  },
+  "keywords": [
+    "dsh-plugin",
+    "bilibili",
+    "video",
+    "asr",
+    "sensevoice",
+    "subtitle",
+    "frame-extraction"
+  ],
+  "license": "MIT"
+}

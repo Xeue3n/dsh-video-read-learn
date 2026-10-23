@@ -1,0 +1,5 @@
+# 统一按 LF 存库，避免 Windows 提交把整仓库标成改动
+* text=auto eol=lf
+*.png binary
+*.jpg binary
+*.ico binary
