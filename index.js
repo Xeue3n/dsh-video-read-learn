@@ -1115,50 +1115,72 @@ export function apply(ctx, config = {}) {
     timeoutMs: 1_800_000,
   });
 
-  // --- video_asr_setup：把本地识别引擎装到独立目录 ----------------------
+  // --- video_compose：时间合成 ------------------------------------------
   register({
-    name: "video_asr_setup",
+    name: "video_compose",
     description:
-      "在插件自己的目录里安装本地语音识别引擎（faster-whisper），装到独立目录、不污染系统 Python。" +
-      "只有当宿主没有 speechToText 后端、又需要在这台机器上直接转写时才用。" +
-      "会从 PyPI 下载约 200MB 依赖，耗时几分钟。装完还需要一个模型文件才能真正转写。",
-    parameters: { type: "object", properties: {} },
+      "把一段区间内的多帧合成一张图（median / average / max / min / union），按镜头自动切分。" +
+      "用途：静止页面上的浮动 UI 抖动、逐字打字残影、新旧帧交替覆盖。" +
+      "注意：只有 median 在静止页场景验证有效；" +
+      "union/average 在整句替换的字幕上会把新旧两句叠成重影——要读整句字幕请用 video_caption。",
+    parameters: {
+      type: "object",
+      properties: {
+        video: { type: "string", description: VIDEO_DESC },
+        start: { type: "number", description: "区间起点（秒）" },
+        end: { type: "number", description: "区间终点（秒）" },
+        fps: { type: "number", description: "采样帧率，默认 4" },
+        mode: {
+          type: "string",
+          enum: ["median", "average", "max", "min", "union"],
+          description: "合成模式，默认 median",
+        },
+        crop: { type: "string", description: "裁切框 \"x0,y0,x1,y1\"（相对坐标 0-1）" },
+        biliPage: { type: "integer", description: "B站分P序号" },
+      },
+      required: ["video", "start", "end"],
+    },
     output: {
       schema: {
         type: "object",
         properties: {
           status: { type: "string" },
-          ok: { type: "boolean" },
-          target: { type: "string" },
-          check: { type: "string" },
-          tail: { type: "string" },
+          mode: { type: "string" },
+          composites: { type: "array" },
+          segments: { type: "array" },
+          out: { type: "string" },
           reason: { type: "string" },
         },
         required: ["status"],
       },
       render: (_a, v) => [{ type: "text", text: JSON.stringify(v, null, 2) }],
     },
-    execute: async () => {
+    execute: async (args) => {
       try {
-        const target = join(homedir(), ".dsh", "video-read", "asr-lib");
-        const info = await engine(["setup-asr", "--target", target, "--detach"], config, { timeoutMs: 120_000 });
-        return {
-          status: info.detached ? "installing" : (info.ok ? "ok" : "failed"),
-          ok: Boolean(info.ok),
-          pid: info.pid ?? null,
-          log: String(info.log ?? ""),
-          target: String(info.target ?? target),
-          check: String(info.check ?? ""),
-          tail: String(info.tail ?? "").slice(-800),
-          note: info.detached
-            ? "安装已在后台开始（约 200MB，几分钟）。看 setup.log 或 asr-lib 目录大小判断进度；装好后还需要模型文件。"
-            : "安装已同步完成。",
-        };
+        const tag = workDirFor(config, String(args.video ?? ""));
+        const mode = String(args.mode ?? "median");
+        const outDir = join(tag, `compose_${mode}`);
+        await mkdir(outDir, { recursive: true });
+        const argv = ["compose", String(args.video ?? ""),
+          "--start", String(args.start), "--end", String(args.end),
+          "--fps", String(args.fps ?? 4), "--mode", mode, "--out", outDir];
+        if (args.crop) argv.push("--crop", String(args.crop));
+        if (args.biliPage) argv.push("--page", String(args.biliPage));
+        const r = await engine(argv, config, { timeoutMs: 900_000 });
+        return clean({
+          status: "ok",
+          mode: String(r.mode ?? mode),
+          composites: r.composites || [],
+          segments: r.segments || [],
+          out: outDir,
+          cut_threshold: r.cut_threshold ?? null,
+          note: "按镜头切分后逐段合成；同段内的 single_*.jpg 是原样单帧，可用于对比合成效果。",
+        });
       } catch (e) {
         return errOut(e);
       }
     },
-    timeoutMs: 1_900_000,
+    timeoutMs: 1_200_000,
   });
 
   // --- video_outline：把扫描结果整备成「可成文」的证据 -------------------
