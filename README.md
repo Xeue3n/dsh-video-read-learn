@@ -20,9 +20,28 @@
 
 ## 安装
 
-```text
-plugin_manager install_bundle  target: <本目录绝对路径>
+### 从 GitHub 安装
+
+```powershell
+git clone https://github.com/Xeue3n/dsh-video-read-learn.git
 ```
+
+然后在 DSH 里把**这个目录**装进去：
+
+```text
+plugin_manager install_bundle  target: <clone 下来的绝对路径>
+```
+
+> 仓库目前是私有的，`clone` 前需要先登录有权限的 GitHub 账号（Git Credential Manager 会自动弹窗）。
+> 转成公开后，别人才能直接 clone。
+
+### 本地开发
+
+| 改了哪个文件 | 要做什么 |
+|---|---|
+| `index.js` | 必须 remove + install 才生效 |
+| `scripts/video_engine.py` | 直接生效，不用重装 |
+| `templates/*.md` | 直接生效 |
 
 依赖：
 
@@ -280,15 +299,20 @@ video_sweep { video, start: 0, end: 240, step: 15 }   →  1 张拼图
 
 > 为什么要两档而不是一档：事件是「点」，密度是「区间」。只抓事件会漏掉缓慢推进的段落；只按密度均匀抽又会错过短暂但关键的突变。两者叠起来才完整。
 
-## 四个工具
+## 十个工具
 
-| 工具 | 作用 |
-|---|---|
-| `video_scan` | **主干**：密度分档 + 采样计划 + 事件表 |
-| `video_sweep` | **分档抽帧**：区间 + 步长 → 拼图（4×4，带时间标签） |
-| `video_digest` | 一键：扫描 + 挑关键时刻 + 抽图 |
-| `video_frames` | 精调：指定时刻 / 区域 / `crop`，原分辨率裁切 |
-| `video_probe` | 时长、清晰度、登录状态、可读性判定 |
+| 工具 | 通道 | 作用 |
+|---|---|---|
+| `video_probe` | 源 | 时长、清晰度、登录状态、可读性判定 |
+| `video_scan` | 画面 | **主干**：密度分档 + 采样计划 + 事件表 + 内容形态判定 |
+| `video_sweep` | 画面 | **分档抽帧**：区间 + 步长 → 拼图（4×4，带时间标签） |
+| `video_frames` | 画面 | 精调：指定时刻 / 区域 / `crop`，原分辨率裁切 |
+| `video_caption` | 字幕 | 硬字幕纵向长图，自动分句取最全帧 |
+| `video_subtitle` | 字幕 | B站 CC / AI 字幕（需登录） |
+| `video_asr` | 音频 | 音频转写（SenseVoice → whisper.cpp 降级） |
+| `video_outline` | 输出 | 整备成文证据 + 给方法流程文档模板 |
+| `video_fetch` | 底座 | 落本地、断网复用 |
+| `video_compose` | 底座 | 时间合成（仅 `median` 可用，见限制） |
 
 ### 区域
 
@@ -343,8 +367,7 @@ video_sweep { video, start: 0, end: 240, step: 15 }   →  1 张拼图
 | 长 span 可能含多个操作 | 例如连续 170 秒都在开菜单，需要区间内再加密抽帧 |
 | 密度网格是 5 分钟 | 短于 1 秒的瞬时操作可能落在两格之间，靠事件表兜 |
 | 30 秒硬切片 | 段交界处有半句重叠（`00:29–00:31` 与 `00:30–00:33`）。宿主 SenseVoice 的 VAD 能避开，但当前切片是机械的 |
-| `slides` 模式采样未自动化 | `scene_cuts` 要手动传给 `video_frames`，还没有一条命令跑完 |
-| `kind` 分类对 `slides` 视频无意义 | 那是 Blender 语义，讲解类视频会输出一堆 `menu` |
+| `slides` 的采样已自动化，但 `video_digest`/`video_sweep` 还没接 | `video_outline` 会按切换点分段一页一帧；单独用 `video_sweep` 时仍要自己传区间 |
 | 区域预设只是默认值 | 布局因 UP 而异（有人右上是属性面板、有人中右是浮动 N 面板、有人带任务栏），要 `crop` 精调 |
 | 硬字幕分句仍可能拆句 | 说话人切换、角色立绘跳动都会干扰；读时看相邻两条能否接上 |
 | 时间合成只在「字只增不减」时有用 | `median` 在静止页有效；**`union` / `average` 已实测：整句替换的字幕上会叠成重影**（旧字被擦、新字整句换掉，两段内容对不上）。要读整句字幕请用 `video_caption` 的「取最全帧」，不要用合成 |
@@ -364,14 +387,6 @@ video_sweep { video, start: 0, end: 240, step: 15 }   →  1 张拼图
 - ffmpeg：优先 `imageio_ffmpeg` 自带的，其次 PATH
 
 解释器探测：`pythonPath` 配置 → `DSH_VIDEO_PYTHON` → `$DSH_HOME/dsh-runtimes/*/dependencies/python/python.exe` → `~/.dsh/dsh-runtimes/...` → PATH。
-
-## 安装
-
-```text
-plugin_manager install_bundle  target: <本目录绝对路径>
-```
-
-改 `index.js` 后需 remove + install；改 `scripts/video_engine.py` 不用。
 
 ## 许可
 
