@@ -650,8 +650,9 @@ export function apply(ctx, config = {}) {
     name: "video_digest",
     description:
       "一条命令从链接直接拿到关键画面：先自动扫描界面变化事件，再对最值得看的时刻抽 UI 裁切，返回图片。" +
-      "用于快速通读；需要精调某个时刻时用 video_frames。" +
-      "直链由工具自动解析，无需手动准备。",
+      "输出面向快速通读；需要精调某个时刻时用 video_frames。" +
+      "直链由工具自动解析，无需手动准备。" +
+      "还原的是操作流程（顺序、在哪一步开菜单、哪一步加修改器），而非参数数值——480p 下参数数字不保证可读。",
     parameters: {
       type: "object",
       properties: {
@@ -748,7 +749,7 @@ export function apply(ctx, config = {}) {
           files: imgs.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note: "原分辨率裁切图，非 OCR 文本。",
+          note: "原分辨率裁切图，非 OCR 文本；图中的数值不保证准确。",
           advice: short >= 700
             ? "清晰度够读界面文字。"
             : `源短边 ${short}px，参数数值可能读不准；要逐字核对需要更高清晰度的源。`,
@@ -765,7 +766,7 @@ export function apply(ctx, config = {}) {
     name: "video_sweep",
     description:
       "按区间和步长一次抽一批帧，并拼成带时间标签的大图（默认 4×4）。" +
-      "step 通常取 video_scan 的 coverage_plan 里每段的 suggest_step。" +
+      "属于「粗扫 / 分档加密」环节：step 通常取 video_scan 的 coverage_plan 里每段的 suggest_step（低/中/高三档约 90 / 35 / 15 秒）。" +
       "在线源逐帧定位，每帧约 0.5 秒。",
     parameters: {
       type: "object",
@@ -1299,7 +1300,7 @@ export function apply(ctx, config = {}) {
       "为教程类视频整备成文证据：按密度段聚合「时间轴 + 事件 + 关键帧 + 字幕 + 音频转写」，并给出方法流程文档模板的路径。" +
       "画面扫描、B站字幕、音频转写三条通道并行跑：画面是主线，另外两条各自独立，失败了也不影响整次阅读。" +
       "它不写笔记，只把材料和骨架摆好，成文交给调用方。" +
-      "字幕与音频转写是两条独立的辅助源，都可能有错。",
+      "字幕与音频转写是两条独立的辅助源，都可能有错；两者不一致时以画面证据为准。",
     parameters: {
       type: "object",
       properties: {
@@ -1421,7 +1422,7 @@ export function apply(ctx, config = {}) {
           ...(asr && asr.status !== "ok" ? { asr_reason: asr.reason } : {}),
           template: join(HERE, "templates", "TUTORIAL_DOC.md"),
           cross_check:
-            "字幕与音频转写是两条独立的辅助源，都可能有错。",
+            "字幕与音频转写是两条独立的辅助源，都可能有错；两者不一致时以画面证据为准。",
         };
       } catch (e) {
         return errOut(e);
@@ -1658,7 +1659,7 @@ export function apply(ctx, config = {}) {
           files: all.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note: "原分辨率裁切图，非 OCR 文本。",
+          note: "原分辨率裁切图，非 OCR 文本；图中的数值不保证准确。",
         };
       } catch (e) {
         return errOut(e);

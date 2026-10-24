@@ -364,6 +364,7 @@ def detect_mode(series, stats, n):
         mode = "mixed"
         advice = (
             "混合模式：界面事件与整屏切换两类信号相当。"
+            "coverage_plan 给出分档采样计划，scene_cuts 给出整屏切换点，两种切分方式都适用于本片。"
         )
     return mode, {
         "mode": mode,
