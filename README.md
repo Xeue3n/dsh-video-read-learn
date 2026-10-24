@@ -20,20 +20,63 @@
 
 ## 安装
 
-### 从 GitHub 安装
+插件以 bundle 形式装进 DSH 的 profile，`install_bundle` 收的是**本地目录的绝对路径**——所以先把代码拿到本地，再把它装进去。
+
+### 依赖
+
+| 项 | 必需 | 说明 |
+|---|---|---|
+| DSH `>=0.2.1-rc.2 <0.3.0` | ✅ | 插件入口与 patch 格式依赖它 |
+| Python 3.10+ 带 `numpy` + `Pillow` | ✅ | 自动探测 DSH runtime 自带的 Python |
+| ffmpeg | ✅ | 优先用 `imageio_ffmpeg` 附带的，见下「装 ffmpeg」 |
+| 宿主 SenseVoice | ⬜ | 没有就退化到本地 whisper.cpp，见「音频转写」 |
+| 本地 whisper.cpp | ⬜ | 放在 `~/.dsh/video-read/whisper/` |
+
+### 获取代码
+
+两种方式任选：
+
+**方式一：git clone**（想用 `git pull` 更新就选这个）
 
 ```powershell
 git clone https://github.com/Xeue3n/dsh-video-read-learn.git
 ```
 
-然后在 DSH 里把**这个目录**装进去：
+**方式二：下载 Release 附件**
+
+到 [Releases](https://github.com/Xeue3n/dsh-video-read-learn/releases) 下载 `dsh-video-read-learn-<版本>.zip`，解压到任意目录。
+
+### 装进 DSH
+
+把上一步得到的目录（**绝对路径**）交给 `plugin_manager`：
 
 ```text
-plugin_manager install_bundle  target: <clone 下来的绝对路径>
+plugin_manager  action: install_bundle  target: <目录的绝对路径>
 ```
 
-> 仓库目前是私有的，`clone` 前需要先登录有权限的 GitHub 账号（Git Credential Manager 会自动弹窗）。
-> 转成公开后，别人才能直接 clone。
+例如：
+
+```text
+plugin_manager  action: install_bundle  target: C:\Users\me\plugins\dsh-video-read-learn
+```
+
+返回 `application: applied` 即装好，`video_*` 工具随即可用。该操作会改动 profile，装之前 DSH 会让你确认一次。
+
+### 更新
+
+```powershell
+cd dsh-video-read-learn
+git pull
+```
+
+然后对同一个目录再 **remove → install** 一次（`index.js` 不走热加载）：
+
+```text
+plugin_manager  action: remove_bundle   target: dsh-video-read-learn
+plugin_manager  action: install_bundle  target: <目录的绝对路径>
+```
+
+`scripts/video_engine.py` 与 `templates/*.md` 每次从磁盘现读，改完直接生效，不用重装。
 
 ### 本地开发
 
@@ -42,15 +85,6 @@ plugin_manager install_bundle  target: <clone 下来的绝对路径>
 | `index.js` | 必须 remove + install 才生效 |
 | `scripts/video_engine.py` | 直接生效，不用重装 |
 | `templates/*.md` | 直接生效 |
-
-依赖：
-
-| 项 | 必需 | 说明 |
-|---|---|---|
-| Python 3.10+ 带 `numpy` + `Pillow` | ✅ | 自动探测 DSH runtime 自带的 Python |
-| ffmpeg | ✅ | 优先用 `imageio_ffmpeg` 附带的 |
-| 宿主 SenseVoice（可选） | ⬜ | 见下「音频转写」；没有就退化到 whisper.cpp |
-| 本地 whisper.cpp（可选） | ⬜ | 放在 `~/.dsh/video-read/whisper/` |
 
 数据目录：
 
