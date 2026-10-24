@@ -947,7 +947,12 @@ def cmd_caption(args):
     end = min(dur, args.end) if args.end else dur
     if end <= start:
         raise SystemExit("区间为空")
-    step = max(1.0, args.step)
+    # --step 0（默认）自适应：单句字幕通常只停 2–3 秒，步长必须小于这个量级才不会整句错过；
+    # 长视频按 5 秒封顶，避免长图张数失控。显式给正值则完全按调用方来。
+    if not args.step or args.step <= 0:
+        step = max(1.0, min(5.0, dur / 120.0))
+    else:
+        step = max(1.0, args.step)
     regions = dict(DEFAULT_REGIONS)
     if args.regions_json:
         regions = {k: tuple(v) for k, v in json.loads(args.regions_json).items()}
@@ -1437,7 +1442,8 @@ def main():
     ca.add_argument("video")
     ca.add_argument("--start", type=float, default=0)
     ca.add_argument("--end", type=float, default=0)
-    ca.add_argument("--step", type=float, default=5)
+    ca.add_argument("--step", type=float, default=0,
+                    help="抽帧间隔（秒）；0（默认）= 按视频总长自适应（1–5 秒）")
     ca.add_argument("--region", default="subtitle")
     ca.add_argument("--crop", default="")
     ca.add_argument("--width", type=int, default=720)

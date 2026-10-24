@@ -1339,7 +1339,7 @@ export function apply(ctx, config = {}) {
         framesPerSection: { type: "integer", description: "每个密度段抽几帧，默认 2" },
         withSubtitle: { type: "boolean", description: "是否同时取 B站字幕（需要登录），默认 true" },
         withAsr: { type: "boolean", description: "是否并行跑音频转写（ASR），默认 true；关掉就只读画面 + B站字幕" },
-        asrSegment: { type: "integer", description: "ASR 切片长度（秒）；0（默认）= 按视频总长自适应" },
+        asrSegment: { type: "integer", description: "ASR 切片长度（秒）；默认 15。传 0 = 按总长自适应，短于 5 分钟会整段不切，section 级对齐随之失效" },
         biliPage: { type: "integer", description: "B站分P序号（从 1 开始）" },
       },
       required: ["video"],
@@ -1390,7 +1390,7 @@ export function apply(ctx, config = {}) {
           ? doAsrCore(config, {
               video: args.video,
               biliPage: args.biliPage,
-              segment: args.asrSegment ?? 0,
+              segment: args.asrSegment ?? 15,
             }, ctx, exec).catch((e) => ({ status: "error", reason: String(e?.message ?? e) }))
           : Promise.resolve(null);
 
