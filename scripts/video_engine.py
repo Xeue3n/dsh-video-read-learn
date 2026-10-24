@@ -241,7 +241,7 @@ DEFAULT_REGIONS = {
     "status":   (0.00, 0.85, 1.00, 1.00),
     # 硬字幕带：很多教程 UP 会把解说烧进画面，字号大、480p 也能读，
     # 它是「音频通道」的廉价替代——口述内容直接躺在这里。
-    # 注意：这一带同时包含 3D 视口，差分不是纯字幕信号；要可靠取字幕仍需 OCR 或定间隔扫描。
+    # 这一带同时包含 3D 视口，差分不是纯字幕信号；要可靠取字幕仍需 OCR 或定间隔扫描。
     "subtitle": (0.00, 0.68, 1.00, 0.90),
     "keys":     (0.00, 0.50, 0.30, 0.90),
     "menu":     (0.00, 0.00, 0.60, 0.05),
@@ -351,21 +351,19 @@ def detect_mode(series, stats, n):
     if ui_p50 < 0.5 and ui_rate >= 0.03:
         mode = "operation"
         advice = (
-            "看起来是软件操作演示：界面框架长期静止、面板内容频繁变化。"
-            "按 coverage_plan 分档抽帧看流程，再对 suggested 里的关键时刻做原分辨率裁切。"
+            "软件操作演示：界面框架长期静止、面板内容频繁变化。"
+            "coverage_plan 给出分档采样计划，suggested 给出关键时刻。"
         )
     elif len(cuts) >= 8:
         mode = "slides"
         advice = (
-            "看起来是讲解/剪辑类：没有静止的界面框架，画面按整屏切换推进（固定场景换内容、换截图）。"
-            "别用密度网格抽帧（会抽到切换空档），直接用 scene_cuts 里的切换点，每次切换取一张 full，"
-            "文字信息通常就在整屏里。"
+            "讲解/剪辑类：没有静止的界面框架，画面按整屏切换推进（固定场景换内容、换截图）。"
+            "scene_cuts 给出整屏切换点，文字信息通常在整屏里。"
         )
     else:
         mode = "mixed"
         advice = (
-            "两类信号相当：先用 coverage_plan 分档粗扫确定这一段到底在讲什么，"
-            "再决定按切换点切分还是按事件加密。"
+            "混合模式：界面事件与整屏切换两类信号相当。"
         )
     return mode, {
         "mode": mode,
@@ -535,7 +533,7 @@ def cmd_probe(args):
         "源分辨率足以连参数数值一起读。"
         if readable else
         "源短边仅 %dpx：菜单、修改器名、物体名、模式切换这些粗粒度信息仍然可读，"
-        "足够还原操作流程；但参数框里的数字不保证读准，写流程时不要把它们当确定值。" % short
+        "足够还原操作流程；但参数框里的数字不保证读准。" % short
     )
     print(json.dumps(out, ensure_ascii=False))
 
@@ -716,7 +714,7 @@ def cmd_sweep(args):
 def cmd_subtitle(args):
     """取 B站字幕：官方 CC 优先，其次 AI 字幕（ai-zh）。
 
-    注意：两个接口都会返回 need_login_subtitle=true 且 subtitles 为空——
+    两个接口都会返回 need_login_subtitle=true 且 subtitles 为空——
     字幕是登录后才下发的，不是接口不存在。
     """
     cookie = args.cookie or os.environ.get("BILI_SESSDATA", "")

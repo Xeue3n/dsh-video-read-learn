@@ -650,10 +650,8 @@ export function apply(ctx, config = {}) {
     name: "video_digest",
     description:
       "一条命令从链接直接拿到关键画面：先自动扫描界面变化事件，再对最值得看的时刻抽 UI 裁切，返回图片。" +
-      "适合「给我看看这集讲了什么」式的快速通读；需要精调某个时刻再用 video_frames。" +
-      "直链由工具自动解析，无需手动准备。" +
-      "用途定位：还原操作思路与流程（先做什么、后做什么、在哪一步开菜单、哪一步加修改器），" +
-      "不是抄参数数值——480p 就够看清流程，参数框里的数字别当确定值。",
+      "用于快速通读；需要精调某个时刻时用 video_frames。" +
+      "直链由工具自动解析，无需手动准备。",
     parameters: {
       type: "object",
       properties: {
@@ -750,9 +748,7 @@ export function apply(ctx, config = {}) {
           files: imgs.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note:
-            "这些是原分辨率裁切，不是 OCR 文本。图片里的数值请逐个核对后再写进笔记；" +
-            "看不清的地方明确写「不可读」，不要用常识补全参数。",
+          note: "原分辨率裁切图，非 OCR 文本。",
           advice: short >= 700
             ? "清晰度够读界面文字。"
             : `源短边 ${short}px，参数数值可能读不准；要逐字核对需要更高清晰度的源。`,
@@ -768,9 +764,8 @@ export function apply(ctx, config = {}) {
   register({
     name: "video_sweep",
     description:
-      "按区间和步长一次抽一批帧，并拼成带时间标签的大图（默认 4×4）。这是「粗扫 / 分档加密」那一环：" +
-      "先拿 video_scan 的 coverage_plan，再按每段的 suggest_step 调用本工具。" +
-      "低密度段 step=90 保覆盖，中密度 35，高密度 15；一张拼图看 16 帧，注意力花在「这一段在干什么」而不是逐个参数。" +
+      "按区间和步长一次抽一批帧，并拼成带时间标签的大图（默认 4×4）。" +
+      "step 通常取 video_scan 的 coverage_plan 里每段的 suggest_step。" +
       "在线源逐帧定位，每帧约 0.5 秒。",
     parameters: {
       type: "object",
@@ -968,7 +963,7 @@ export function apply(ctx, config = {}) {
     description:
       "取 B站这一集的字幕：优先官方 CC，其次 AI 字幕（ai-zh），输出带时间戳的分段文本。" +
       "这是「口述内容」最完整的一条通道，比抽帧读画面精确得多。" +
-      "注意：B站的字幕是登录后才下发的（接口会返回 need_login_subtitle=true，未登录时 subtitles 为空），" +
+      "B站的字幕是登录后才下发的（接口返回 need_login_subtitle=true，未登录时 subtitles 为空），" +
       "需要 ~/.dsh/bili-sessdata.txt 或环境变量 BILI_SESSDATA。" +
       "分段可能很多，默认只返回前 40 条，用 offset 翻页；完整内容存在返回的 file 里。",
     parameters: {
@@ -1235,7 +1230,7 @@ export function apply(ctx, config = {}) {
     description:
       "把一段区间内的多帧合成一张图（median / average / max / min / union），按镜头自动切分。" +
       "用途：静止页面上的浮动 UI 抖动、逐字打字残影、新旧帧交替覆盖。" +
-      "注意：只有 median 在静止页场景验证有效；" +
+      "只有 median 在静止页场景验证有效；" +
       "union/average 在整句替换的字幕上会把新旧两句叠成重影——要读整句字幕请用 video_caption。",
     parameters: {
       type: "object",
@@ -1304,7 +1299,7 @@ export function apply(ctx, config = {}) {
       "为教程类视频整备成文证据：按密度段聚合「时间轴 + 事件 + 关键帧 + 字幕 + 音频转写」，并给出方法流程文档模板的路径。" +
       "画面扫描、B站字幕、音频转写三条通道并行跑：画面是主线，另外两条各自独立，失败了也不影响整次阅读。" +
       "它不写笔记，只把材料和骨架摆好，成文交给调用方。" +
-      "注意：字幕与音频转写都不是权威，两边不一致时以画面为准，并写进文档的「待核验」。",
+      "字幕与音频转写是两条独立的辅助源，都可能有错。",
     parameters: {
       type: "object",
       properties: {
@@ -1426,8 +1421,7 @@ export function apply(ctx, config = {}) {
           ...(asr && asr.status !== "ok" ? { asr_reason: asr.reason } : {}),
           template: join(HERE, "templates", "TUTORIAL_DOC.md"),
           cross_check:
-            "画面是主证据；字幕与音频转写是两个独立的辅助源，都可能出错。" +
-            "两者不一致时以画面为准，并记进文档的「待核验」。",
+            "字幕与音频转写是两条独立的辅助源，都可能有错。",
         };
       } catch (e) {
         return errOut(e);
@@ -1441,7 +1435,7 @@ export function apply(ctx, config = {}) {
     name: "video_probe",
     description:
       "解析视频源：时长、读取轨尺寸、B站可用清晰度与登录状态，并判定这个源够不够读界面文字。" +
-      "在线源的直链由工具自动解析。源短边低于 700px 时不要指望读准参数数值。",
+      "在线源的直链由工具自动解析。源短边低于 700px 时参数数值通常不可读。",
     parameters: {
       type: "object",
       properties: {
@@ -1497,7 +1491,7 @@ export function apply(ctx, config = {}) {
       "②suggested 事件表——档内最值得单看的时刻（尖峰）。" +
       "事件带 kind：menu(开菜单找命令)/object(新建切换物体)/params(加修改器调参)/scene(大纲变化)/view(只换视图)。" +
       "用法：先看 content_mode——operation(软件操作演示) 就按 coverage_plan 分档抽帧，" +
-      "slides(幻灯片/口播) 就别用密度网格、改按 scene_cuts 每页取一帧。" +
+      "slides(幻灯片/口播) 模式按 scene_cuts 每页取一帧。" +
       "再对 suggested 里的关键时刻用 video_frames 精读。在线源走最低清晰度，不落视频文件。",
     parameters: {
       type: "object",
@@ -1664,9 +1658,7 @@ export function apply(ctx, config = {}) {
           files: all.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note:
-            "这些是原分辨率裁切，不是 OCR 文本。图片里的数值请逐个核对后再写进笔记；" +
-            "看不清的地方明确写「不可读」，不要用常识补全参数。",
+          note: "原分辨率裁切图，非 OCR 文本。",
         };
       } catch (e) {
         return errOut(e);
