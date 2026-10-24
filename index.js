@@ -381,7 +381,260 @@ const renderFrames = (_a, v) => {
   return blocks;
 };
 
+/**
+ * 音频转写内核：抽音轨 → 切固定长度片段 → 宿主 speechToText 优先，本地 whisper.cpp 兜底。
+ *
+ * 返回**全量**分段（不分页）：video_asr 在工具层分页，video_outline 需要全量去做段内对齐。
+ * 它和画面证据互不依赖，所以可以被并行调用（见 video_outline）。
+ */
+async function doAsrCore(config, opts, ctx, exec) {
+  const video = String(opts?.video ?? "");
+  const dir = join(workDirFor(config, video), "audio");
+  await mkdir(dir, { recursive: true });
+  const localWhisper = findWhisper(config);
+  const argv = ["audio", video, "--out", dir, "--segment", String(opts?.segment ?? 0)];
+  if (opts?.biliPage) argv.push("--page", String(opts.biliPage));
+  await engine(argv, config, { timeoutMs: 900_000 });
+  const manifest = JSON.parse(await readFile(join(dir, "audio.json"), "utf8"));
+
+  const stt = ctx?.get?.("speechToText");
+  let providers = [];
+  if (stt) {
+    try {
+      providers = stt.listProviders() || [];
+    } catch {}
+  }
+
+  // 宿主后端只在一开始 prepare 一次；失败后本次会话不再重试，避免每次调用空等
+  let hostReady = false;
+  if (stt && providers.length && speechState !== "unavailable") {
+    try {
+      hostReady = Boolean(await ensureSpeechReady(stt, 240_000));
+      if (!hostReady) speechState = "unavailable";
+    } catch {
+      speechState = "unavailable";
+      hostReady = false;
+    }
+  }
+
+  const pickSegments = () => {
+    let segs = manifest.segments || [];
+    if (opts?.start !== undefined) segs = segs.filter((s) => s.end > Number(opts.start));
+    if (opts?.end !== undefined) segs = segs.filter((s) => s.start < Number(opts.end));
+    return segs;
+  };
+
+  // 宿主没有识别后端时，退回本地 whisper.cpp（离线、免费、带时间戳）
+  if (!hostReady) {
+    const w = localWhisper;
+    if (w) {
+      const segs = pickSegments();
+      const tmpDir = join(tmpdir(), "dsh-video-read-asr");
+      await mkdir(tmpDir, { recursive: true });
+      // 每段一个独立文件 + 独立进程，所以可以并发；文件名带 runTag 防止跨调用踩踏。
+      const runTag = `${process.pid}_${Date.now().toString(36)}`;
+      const concurrency = Math.max(1, Math.min(8, Number(opts?.concurrency ?? 3)));
+      const debug = [];
+      const chunks = await mapLimit(segs, concurrency, async (s) => {
+        if (exec?.signal?.aborted) return [];
+        // whisper-cli 把 .srt 写在输入文件旁边，所以要先把 wav 放到可写目录
+        const localWav = join(tmpDir, `seg_${runTag}_${String(s.index).padStart(4, "0")}.wav`);
+        try {
+          await copyFile(s.file, localWav);
+        } catch (e) {
+          debug.push(`${s.index}: copy ${String(e?.message)}`);
+          return [];
+        }
+        const r = await run(w.exe, ["-m", w.model, "-l", String(opts?.language ?? "zh"),
+          "-f", localWav], { timeoutMs: 900_000 });
+        if (r.code !== 0) {
+          debug.push(`${s.index}: exit ${r.code} ${(r.stderr || "").slice(-160)}`);
+          return [];
+        }
+        // 直接解析 stdout：whisper-cli 的 -osrt 写文件在某些目录下不可靠
+        const got = parseWhisperStdout(r.stdout + "\n" + r.stderr, s.start);
+        if (!got.length) {
+          debug.push(`${s.index}: stdout 无时间戳行 (${(r.stdout || "").length}B)`);
+          return [];
+        }
+        return got;
+      });
+      const rows = chunks.flat().sort((a, b) => a.start - b.start);
+      const out = join(dir, "asr.json");
+      await writeFile(out, JSON.stringify({ segments: rows }, null, 2), "utf8");
+      return clean({
+        status: "ok",
+        engine: "local-whisper.cpp",
+        engine_dir: w.dir,
+        duration: manifest.duration,
+        segment_seconds: manifest.segment_seconds,
+        segments: rows,
+        text: joinTranscript(rows),
+        concurrency,
+        file: out,
+        ...(debug.length ? { debug: debug.slice(0, 10) } : {}),
+        note:
+          "本地 whisper.cpp 转写（CPU）。机器转写，专有名词可能有错字；" +
+          "段与段之间按切片硬切，交界处可能有半句重叠。",
+      });
+    }
+    return clean({
+      status: "no_backend",
+      audio_file: manifest.audio,
+      duration: manifest.duration,
+      audio_segments: (manifest.segments || []).length,
+      segment_seconds: manifest.segment_seconds,
+      segments: [],
+      reason:
+        (stt
+          ? "宿主有 speechToText 服务，但没有注册任何识别后端；本地也没找到 whisper.cpp。"
+          : "宿主没有 speechToText 服务，本地也没找到 whisper.cpp。") +
+        "音频已经抽好并切好段，可以交给外部工具转写。",
+      howto: [
+        `音频：${manifest.audio}`,
+        `分段：${dir}\\seg_*.wav（16kHz 单声道，每段 ${manifest.segment_seconds} 秒）`,
+        "本地引擎放置位置：<whisperDir>\\whispercpp\\Release\\whisper-cli.exe 与 <whisperDir>\\models\\ggml-small.bin",
+      ],
+    });
+  }
+
+  const segs = pickSegments();
+  const concurrency = Math.max(1, Math.min(8, Number(opts?.concurrency ?? 3)));
+  // 分段并发转写：每段独立 resolve / transcribe，结果按输入顺序回收再按时间排序。
+  const parts = await mapLimit(segs, concurrency, async (s) => {
+    const buf = await readFile(s.file);
+    const spec = stt.resolve({
+      audio: new Uint8Array(buf),
+      language: String(opts?.language ?? "zh"),
+    });
+    const provider = String(spec?.provider?.info?.name ?? spec?.provider?.info?.id ?? "");
+    const t = await stt.transcribe(spec, exec?.signal);
+    return { start: s.start, end: s.end, text: String(t?.text ?? "").trim(), provider };
+  });
+  parts.sort((a, b) => a.start - b.start);
+  const rows = parts.map(({ provider, ...rest }) => rest);
+  const usedProvider = parts.find((p) => p.provider)?.provider ?? "";
+
+  const out = join(dir, "asr.json");
+  await writeFile(out, JSON.stringify({ segments: rows }, null, 2), "utf8");
+  return clean({
+    status: "ok",
+    providers: providers.map((p) => ({ id: String(p.id), name: p.name, location: p.location })),
+    provider: usedProvider,
+    fallback_engine: localWhisper ? localWhisper.dir : null,
+    duration: manifest.duration,
+    segment_seconds: manifest.segment_seconds,
+    segments: rows,
+    text: joinTranscript(rows),
+    concurrency,
+    file: out,
+    note: "机器转写，专有名词可能有错字；时间戳精度等于切片长度，要更细就减小 segment。",
+  });
+}
+
+/** video_asr 工具入口：doAsrCore + 分页。 */
+async function doAsr(config, args, ctx, exec) {
+  const r = await doAsrCore(config, args, ctx, exec);
+  if (r.status !== "ok") return r;
+  const total = r.segments.length;
+  const offset = Math.max(0, Number(args?.offset ?? 0));
+  const limit = Math.max(1, Number(args?.limit ?? 40));
+  return clean({
+    ...r,
+    segment_count: total,
+    offset,
+    limit,
+    nextOffset: offset + limit < total ? offset + limit : null,
+    segments: r.segments.slice(offset, offset + limit),
+  });
+}
+
+/** 限定并发数的 map：结果保持输入顺序，超出的排队。 */
+async function mapLimit(items, limit, fn) {
+  const out = new Array(items.length);
+  let cursor = 0;
+  const width = Math.max(1, Math.min(Number(limit) || 1, items.length));
+  const workers = Array.from({ length: width }, async () => {
+    for (;;) {
+      const i = cursor++;
+      if (i >= items.length) return;
+      out[i] = await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+  return out;
+}
+
+/** 把分段转写合成一份全文。 */
+function joinTranscript(rows) {
+  return rows
+    .map((r) => String(r.text || "").trim())
+    .filter(Boolean)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+/** 把一段字幕/转写按 [start, end) 取出拼接文本；没有就返回 null。 */
+function textWithin(rows, start, end) {
+  if (!Array.isArray(rows) || !rows.length) return null;
+  const parts = rows
+    .filter((s) => s.end >= start && s.start <= end)
+    .map((s) => String(s.text || "").trim())
+    .filter(Boolean);
+  return parts.length ? parts.join(" ") : null;
+}
+
+/**
+ * 启动自检：确认运行环境里能找到 ffmpeg。
+ *
+ * 发行版默认**不改动用户环境**——只检测，缺失时留一条可操作的警告。
+ * 需要插件代为补装时，在 profile 的 cordis.patch.yml 里显式打开：
+ *
+ *     - id: dsh-video-read-learn
+ *       name: dsh-video-read-learn
+ *       config:
+ *         autoInstallFfmpeg: true
+ *
+ * 安装目标是当前解释器（DSH runtime 的 Python）里的 imageio_ffmpeg，
+ * 它自带 ffmpeg 二进制，装好之后长期可用。
+ */
+async function checkFfmpeg(config, ctx) {
+  let py;
+  try {
+    py = await resolvePython(config);
+  } catch {
+    return; // 连 Python 都没有：等工具调用时由 resolvePython 报更准确的错
+  }
+  const check = await run(py, [
+    "-c",
+    "import imageio_ffmpeg,os,sys;p=imageio_ffmpeg.get_ffmpeg_exe();sys.exit(0 if p and os.path.isfile(p) else 1)",
+  ], { timeoutMs: 30_000 });
+  if (check.code === 0) return;
+
+  const hint =
+    `未找到 ffmpeg。请执行 "${py} -m pip install imageio_ffmpeg"` +
+    "，或把 ffmpeg.exe 加入 PATH。";
+  const warn = (msg) => {
+    try {
+      ctx?.logger?.warn?.(msg);
+    } catch {}
+  };
+
+  if (config?.autoInstallFfmpeg !== true) {
+    warn(`dsh-video-read-learn: ${hint}`);
+    return;
+  }
+  const install = await run(py, [
+    "-m", "pip", "install", "--quiet", "--disable-pip-version-check", "imageio_ffmpeg",
+  ], { timeoutMs: 300_000 });
+  if (install.code !== 0) warn(`dsh-video-read-learn: 自动安装 imageio_ffmpeg 失败。${hint}`);
+}
+
 export function apply(ctx, config = {}) {
+  // 启动自检（非阻塞）：默认只提示；autoInstallFfmpeg: true 时代为补装。
+  void checkFfmpeg(config, ctx).catch(() => {});
+
   const register = (definition) =>
     ctx.effect(() =>
       ctx.tools.register({
@@ -925,14 +1178,14 @@ export function apply(ctx, config = {}) {
       "再把各段结果拼成时间轴——因为宿主转录只给整段文本，没有时间戳。" +
       "这是「没有硬字幕、也没有 CC 字幕」时唯一能拿到口述内容的通道。" +
       "依赖宿主的 speechToText 服务；没有可用后端时明确报告，不会假装转写过。" +
-      "长视频很慢，建议先用 start/end 圈定一段试。",
+      "切片长度按视频总长自适应，多段并发转写，最后合成「全文 + 时间戳分段」；长视频仍然慢，可以先用 start/end 圈定一段试。",
     parameters: {
       type: "object",
       properties: {
         video: { type: "string", description: VIDEO_DESC },
         start: { type: "number", description: "只转写这一段（秒），默认从头" },
         end: { type: "number", description: "转写到这一段（秒），默认到片尾" },
-        segment: { type: "number", description: "切片长度（秒），默认 30；越短时间戳越准、调用越多" },
+        segment: { type: "number", description: "切片长度（秒）；0（默认）= 按视频总长自适应，显式给值则固定切片" },
         language: { type: "string", description: "语言代码，默认 zh" },
         offset: { type: "integer", description: "结果分页起始，默认 0" },
         limit: { type: "integer", description: "本页返回多少条，默认 40" },
@@ -954,6 +1207,10 @@ export function apply(ctx, config = {}) {
           limit: { type: "number" },
           nextOffset: { description: "下一页偏移；null 表示已无更多" },
           segments: { type: "array" },
+          text: { type: "string" },
+          concurrency: { type: "number" },
+          engine: { type: "string" },
+          engine_dir: { type: "string" },
           file: { type: "string" },
           note: { type: "string" },
           reason: { type: "string" },
@@ -964,150 +1221,7 @@ export function apply(ctx, config = {}) {
     },
     execute: async (args, exec) => {
       try {
-        // 先把音频抽出来：即使宿主没有识别后端，这份音频也能交给外部工具
-        // （剪映的「智能字幕」、Whisper、其它在线服务）转写后再导回来。
-        const dir = join(workDirFor(config, String(args.video ?? "")), "audio");
-        await mkdir(dir, { recursive: true });
-        const localWhisper = findWhisper(config);
-        const argv = ["audio", String(args.video ?? ""), "--out", dir,
-          "--segment", String(args.segment ?? 30)];
-        if (args.biliPage) argv.push("--page", String(args.biliPage));
-        await engine(argv, config, { timeoutMs: 900_000 });
-        const manifest = JSON.parse(await readFile(join(dir, "audio.json"), "utf8"));
-
-        const stt = ctx.get?.("speechToText");
-        let providers = [];
-        if (stt) {
-          try {
-            providers = stt.listProviders() || [];
-          } catch {}
-        }
-
-        // 宿主没有识别后端时，退回本地 whisper.cpp（离线、免费、带时间戳）
-        let hostReady = false;
-        if (stt && providers.length && speechState !== "unavailable") {
-          try {
-            hostReady = Boolean(await ensureSpeechReady(stt, 240_000));
-            if (!hostReady) speechState = "unavailable";
-          } catch {
-            speechState = "unavailable";
-            hostReady = false;
-          }
-        }
-        if (!hostReady) {
-          const w = localWhisper;
-          if (w) {
-            let segs = manifest.segments || [];
-            if (args.start !== undefined) segs = segs.filter((s) => s.end > Number(args.start));
-            if (args.end !== undefined) segs = segs.filter((s) => s.start < Number(args.end));
-            const rows = [];
-            const tmpDir = join(tmpdir(), "dsh-video-read-asr");
-            await mkdir(tmpDir, { recursive: true });
-            const debug = [];
-            for (const s of segs) {
-              if (exec?.signal?.aborted) break;
-              // whisper-cli 把 .srt 写在输入文件旁边，所以要先把 wav 放到可写目录
-              const localWav = join(tmpDir, `seg_${String(s.index).padStart(4, "0")}.wav`);
-              try {
-                await copyFile(s.file, localWav);
-              } catch (e) {
-                debug.push(`${s.index}: copy ${String(e?.message)}`);
-                continue;
-              }
-              const r = await run(w.exe, ["-m", w.model, "-l", String(args.language ?? "zh"),
-                "-f", localWav], { timeoutMs: 900_000 });
-              if (r.code !== 0) {
-                debug.push(`${s.index}: exit ${r.code} ${(r.stderr || "").slice(-160)}`);
-                continue;
-              }
-              // 直接解析 stdout：whisper-cli 的 -osrt 写文件在某些目录下不可靠
-              const got = parseWhisperStdout(r.stdout + "\n" + r.stderr, s.start);
-              if (!got.length) {
-                debug.push(`${s.index}: stdout 无时间戳行 (${(r.stdout || "").length}B)`);
-                continue;
-              }
-              rows.push(...got);
-            }
-            rows.sort((a, b) => a.start - b.start);
-            const out = join(dir, "asr.json");
-            await writeFile(out, JSON.stringify({ segments: rows }, null, 2), "utf8");
-            const offset = Math.max(0, Number(args.offset ?? 0));
-            const limit = Math.max(1, Number(args.limit ?? 40));
-            return clean({
-              status: "ok",
-              engine: "local-whisper.cpp",
-              engine_dir: w.dir,
-              duration: manifest.duration,
-              segment_seconds: manifest.segment_seconds,
-              segment_count: rows.length,
-              offset,
-              limit,
-              nextOffset: offset + limit < rows.length ? offset + limit : null,
-              segments: rows.slice(offset, offset + limit),
-              file: out,
-              ...(debug.length ? { debug: debug.slice(0, 10) } : {}),
-              note:
-                "本地 whisper.cpp 转写（CPU）。机器转写，专有名词可能有错字；" +
-                "段与段之间按切片硬切，交界处可能有半句重叠。",
-            });
-          }
-          return clean({
-            status: "no_backend",
-            audio_file: manifest.audio,
-            duration: manifest.duration,
-            audio_segments: (manifest.segments || []).length,
-            segment_seconds: manifest.segment_seconds,
-            reason:
-              (stt
-                ? "宿主有 speechToText 服务，但没有注册任何识别后端；本地也没找到 whisper.cpp。"
-                : "宿主没有 speechToText 服务，本地也没找到 whisper.cpp。") +
-              "音频已经抽好并切好段，可以交给外部工具转写。",
-            howto: [
-              `音频：${manifest.audio}`,
-              `分段：${dir}\\seg_*.wav（16kHz 单声道，每段 ${manifest.segment_seconds} 秒）`,
-              "本地引擎放置位置：<whisperDir>\\whispercpp\\Release\\whisper-cli.exe 与 <whisperDir>\\models\\ggml-small.bin",
-            ],
-          });
-        }
-
-        let segs = manifest.segments || [];
-        if (args.start !== undefined) segs = segs.filter((s) => s.end > Number(args.start));
-        if (args.end !== undefined) segs = segs.filter((s) => s.start < Number(args.end));
-
-        const rows = [];
-        let usedProvider = "";
-        for (const s of segs) {
-          const buf = await readFile(s.file);
-          const spec = stt.resolve({
-            audio: new Uint8Array(buf),
-            language: String(args.language ?? "zh"),
-          });
-          usedProvider = String(spec?.provider?.info?.name ?? spec?.provider?.info?.id ?? usedProvider);
-          const t = await stt.transcribe(spec, exec.signal);
-          const text = String(t?.text ?? "").trim();
-          rows.push({ start: s.start, end: s.end, text });
-        }
-
-        const out = join(dir, "asr.json");
-        await writeFile(out, JSON.stringify({ segments: rows }, null, 2), "utf8");
-
-        const offset = Math.max(0, Number(args.offset ?? 0));
-        const limit = Math.max(1, Number(args.limit ?? 40));
-        return clean({
-          status: "ok",
-          providers: providers.map((p) => ({ id: String(p.id), name: p.name, location: p.location })),
-          provider: usedProvider,
-          fallback_engine: localWhisper ? localWhisper.dir : null,
-          duration: manifest.duration,
-          segment_seconds: manifest.segment_seconds,
-          segment_count: rows.length,
-          offset,
-          limit,
-          nextOffset: offset + limit < rows.length ? offset + limit : null,
-          segments: rows.slice(offset, offset + limit),
-          file: out,
-          note: "机器转写，专有名词可能有错字；时间戳精度等于切片长度，要更细就减小 segment。",
-        });
+        return await doAsr(config, args, ctx, exec);
       } catch (e) {
         return errOut(e);
       }
@@ -1187,16 +1301,18 @@ export function apply(ctx, config = {}) {
   register({
     name: "video_outline",
     description:
-      "为教程类视频整备成文证据：按密度段聚合「时间轴 + 事件 + 关键帧 + 字幕」，并给出方法流程文档模板的路径。" +
+      "为教程类视频整备成文证据：按密度段聚合「时间轴 + 事件 + 关键帧 + 字幕 + 音频转写」，并给出方法流程文档模板的路径。" +
+      "画面扫描、B站字幕、音频转写三条通道并行跑：画面是主线，另外两条各自独立，失败了也不影响整次阅读。" +
       "它不写笔记，只把材料和骨架摆好，成文交给调用方。" +
-      "注意：字幕不是权威——同一段建议再跑 video_asr 拿音频转写，两边交叉核对；" +
-      "不一致时以画面为准，并写进文档的「待核验」。",
+      "注意：字幕与音频转写都不是权威，两边不一致时以画面为准，并写进文档的「待核验」。",
     parameters: {
       type: "object",
       properties: {
         video: { type: "string", description: VIDEO_DESC },
         framesPerSection: { type: "integer", description: "每个密度段抽几帧，默认 2" },
         withSubtitle: { type: "boolean", description: "是否同时取 B站字幕（需要登录），默认 true" },
+        withAsr: { type: "boolean", description: "是否并行跑音频转写（ASR），默认 true；关掉就只读画面 + B站字幕" },
+        asrSegment: { type: "integer", description: "ASR 切片长度（秒）；0（默认）= 按视频总长自适应" },
         biliPage: { type: "integer", description: "B站分P序号（从 1 开始）" },
       },
       required: ["video"],
@@ -1212,6 +1328,9 @@ export function apply(ctx, config = {}) {
           event_count: { type: "number" },
           frame_count: { type: "number" },
           subtitle_route: { type: "string" },
+          asr_route: { type: "string" },
+          asr_segment_count: { type: "number" },
+          asr_reason: { type: "string" },
           template: { type: "string" },
           cross_check: { type: "string" },
           reason: { type: "string" },
@@ -1220,11 +1339,29 @@ export function apply(ctx, config = {}) {
       },
       render: (_a, v) => [{ type: "text", text: JSON.stringify(v, null, 2) }],
     },
-    execute: async (args) => {
+    execute: async (args, exec) => {
       try {
-        const report = await doScan(config, {
+        // 三条腿同时起跑：画面扫描是主线，B站字幕与音频转写各自独立、互不阻塞。
+        // 任何一条辅助通道失败都只是少一个证据源，不会让整次阅读失败。
+        const withAsr = args.withAsr !== false;
+        const scanP = doScan(config, {
           video: args.video, top: 60, biliPage: args.biliPage,
         });
+        const subP = args.withSubtitle === false
+          ? Promise.resolve(null)
+          : doSubtitle(config, args.video, args.biliPage);
+        const asrP = withAsr
+          ? doAsrCore(config, {
+              video: args.video,
+              biliPage: args.biliPage,
+              segment: args.asrSegment ?? 0,
+            }, ctx, exec).catch((e) => ({ status: "error", reason: String(e?.message ?? e) }))
+          : Promise.resolve(null);
+
+        // 画面是主证据：只有 doScan 失败才算整体失败；两条辅助通道各自兜住自己的异常。
+        const [report, sub, asr] = await Promise.all([scanP, subP, asrP]);
+        const asrSegs = asr && asr.status === "ok" ? asr.segments : [];
+
         const mode = report.content_mode?.mode;
         let plan = report.coverage_plan || [];
         // 讲解/剪辑类视频按「整屏切换点」分段，一页一帧；密度网格对它没有意义
@@ -1260,17 +1397,9 @@ export function apply(ctx, config = {}) {
           files = g.all.map((m) => ({ at: m.at, file: m.file }));
         }
 
-        const sub = args.withSubtitle === false ? null : await doSubtitle(config, args.video, args.biliPage);
         const sections = plan.map((p, i) => {
           const segFrames = files.filter((f) => f.at >= p.start && f.at < p.end);
           const segEvents = (report.suggested || []).filter((e) => e.at >= p.start && e.at < p.end);
-          const say = sub
-            ? sub.segments
-                .filter((s) => s.end >= p.start && s.start <= p.end)
-                .map((s) => String(s.text || "").trim())
-                .filter(Boolean)
-                .join(" ")
-            : null;
           return {
             index: i + 1,
             start: p.start,
@@ -1278,7 +1407,9 @@ export function apply(ctx, config = {}) {
             level: p.level,
             frames: segFrames.map((f) => f.file),
             events: segEvents.slice(0, 8).map((e) => ({ at: e.at, kind: e.kind, span: e.span })),
-            subtitle: say || null,
+            // 画面（frames/events）在前，两个辅助文本源并排在后
+            subtitle: textWithin(sub?.segments, p.start, p.end),
+            asr: textWithin(asrSegs, p.start, p.end),
           };
         });
 
@@ -1290,10 +1421,13 @@ export function apply(ctx, config = {}) {
           event_count: (report.suggested || []).length,
           frame_count: files.length,
           subtitle_route: sub ? sub.route : "none",
+          asr_route: asr ? asr.status : "off",
+          asr_segment_count: asrSegs.length,
+          ...(asr && asr.status !== "ok" ? { asr_reason: asr.reason } : {}),
           template: join(HERE, "templates", "TUTORIAL_DOC.md"),
           cross_check:
-            "字幕与音频是两个独立证据源，都可能出错。建议对同一段再跑 video_asr，" +
-            "两处不一致时以画面为准，并记进文档的「待核验」。",
+            "画面是主证据；字幕与音频转写是两个独立的辅助源，都可能出错。" +
+            "两者不一致时以画面为准，并记进文档的「待核验」。",
         };
       } catch (e) {
         return errOut(e);

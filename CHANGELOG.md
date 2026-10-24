@@ -1,5 +1,37 @@
 # 变更记录
 
+## 0.9.1 — 2026-10-24
+
+### 新增
+
+- **`video_outline` 并行接入音频转写**：新增 `withAsr`（默认 `true`）与 `asrSegment`。`sections` 里每段多了 `asr` 字段，与 `subtitle` 并列。
+- **ASR 切片自适应**：`--segment 0`（默认）由视频总长决定 —— **不超过 5 分钟不切**，整段一次读完（每段都要重新加载一次识别模型，切开反而更慢；本地 whisper 本来就会自己按句输出时间戳）；**更长才切片并并发**，每段 `clamp(总长 / 60, 15, 90)` 秒。实测 90s → 1 段，400s → 15s × 27 段，724s → 15s × 49 段，3600s → 60s × 61 段，7200s → 90s × 81 段。
+- **多段并发转写**：每段独立文件、独立进程，默认 3 路并发（`concurrency` 可调，上限 8）。结果按时间排序后合成 `text` 全文与 `segments` 时间戳分段一起返回。
+- 抽出内部函数 `doAsrCore`（返回全量分段）与 `doAsr`（分页包装）；`video_asr` 改为调用它们，对外行为不变。
+
+### 修复
+
+- **无音轨被误报成下载失败**：源本身没有音轨时 `cmd_audio` 一律抛 `AUDIO_DOWNLOAD_FAILED`，看起来像网络问题。现在读取 ffmpeg 的 stderr 加以区分，报 `NO_AUDIO_TRACK: 这个源没有音轨 —— 画面正常，但没有可转写的声音。`
+- **缺 ffmpeg 时全部工具一起失效，且报错不可操作**：`find_ffmpeg` 的三条定位路径（显式参数 / `imageio_ffmpeg` / PATH）任一满足即可，但三者皆空时 probe / scan / fetch / frames / caption / compose / asr 全部在 `Source.__init__` 处统一失败，只抛一句 `FFMPEG_NOT_FOUND`，看不出该装什么、装到哪个解释器。现在错误信息直接给出可复制的 pip 命令，并带上当前解释器的绝对路径。
+
+### 变更
+
+- **`video_outline` 从「扫描 → 抽帧 → 取字幕」全串行改为三路并行**。以阅读画面为主线：只有扫描失败才算整体失败，字幕与 ASR 各自兜住异常，缺一条只是少一个证据源。总耗时约等于 `max(扫描 + 抽帧, 字幕, 转写)`，而不是三者相加。输出新增 `asr_route` / `asr_segment_count`，辅助通道失败时带 `asr_reason`。
+- `video_outline` 的描述改为「画面是主证据，字幕与音频转写是并列的辅助源」，调用方不必再自己串一遍 `video_asr` 做交叉核对。
+- **运行时不再自动 `pip install`**。发行版插件不应擅自改动用户环境：此前缺口时引擎会静默向当前解释器装依赖，行为不可预期、也绕过包管理。改为
+  - 启动时 `apply()` 做一次非阻塞自检，缺失只记一条带安装命令的警告；
+  - 确需代为补装时，在 profile 的 `cordis.patch.yml` 里显式设置 `autoInstallFfmpeg: true`。
+- `find_ffmpeg` 去掉供应商目录查找与安装重试，只做「探测 + 报错」，判定顺序仍为 `imageio_ffmpeg` → PATH。
+
+### 发行
+
+- `package.json` 补全 `author` / `repository` / `homepage` / `bugs` / `engines` / `publishConfig`，移除 `private`，`exports` 补 `./cordis.patch.yml` 与 `./package.json`，`files` 补 `LICENSE`。
+- README 增「装 ffmpeg」小节，写清推荐安装方式与 `autoInstallFfmpeg` 开关。
+
+### 取舍
+
+- 默认开启 ASR 会让长视频上的 `video_outline` 变慢（转写本身耗时）；不需要时传 `withAsr: false` 退回「只读画面 + B站字幕」。
+
 ## 0.9.0 — 2026-10-23
 
 从「按界面事件抽帧」扩展到「视频解读全流程」。这一版的判断是：**看懂视频要分通道，每种通道都有自己的失效条件，工具必须诚实地说出来**。

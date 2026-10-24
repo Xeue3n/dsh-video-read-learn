@@ -44,6 +44,7 @@ BILI_API = "https://api.bilibili.com"
 def find_ffmpeg(explicit=""):
     if explicit and os.path.isfile(explicit):
         return explicit
+    # 1) imageio_ffmpeg：装在 DSH 的 Python 里，自带 ffmpeg 二进制（推荐方式）。
     try:
         import imageio_ffmpeg
         p = imageio_ffmpeg.get_ffmpeg_exe()
@@ -51,10 +52,16 @@ def find_ffmpeg(explicit=""):
             return p
     except Exception:
         pass
+    # 2) 系统 PATH。
     p = shutil.which("ffmpeg")
     if p:
         return p
-    raise RuntimeError("FFMPEG_NOT_FOUND")
+    # 这里不自动安装：插件不应擅自改动用户的运行环境。
+    raise RuntimeError(
+        "FFMPEG_NOT_FOUND: 未找到 ffmpeg。请执行 "
+        + '"' + sys.executable + '" -m pip install imageio_ffmpeg'
+        + "，或把 ffmpeg.exe 加入 PATH。"
+    )
 
 
 # --- B站在线源 -----------------------------------------------------------
@@ -1153,6 +1160,26 @@ def write_canonical_wav(path, pcm, rate=16000, channels=1, bits=16):
         f.write(pcm)
 
 
+def pick_segment(duration, target_count=60, lo=15.0, hi=90.0, single_below=300.0):
+    """按视频总长决定切片长度（秒）。
+
+    - 总长不超过 single_below（默认 5 分钟）时**不切**：返回总长本身，只出一段。
+      短视频切开反而更慢——每段都要重新加载一次识别模型，固定开销盖过并发收益；
+      本地 whisper 本来就会自己按句输出时间戳，不依赖切片。
+    - 更长时按 target_count 反推每段长度并夹到 [lo, hi]：段数不爆炸、单段不过长，
+      这些段随后由调用方并发转写。
+    """
+    try:
+        duration = float(duration)
+    except Exception:
+        return lo
+    if duration <= 0:
+        return lo
+    if duration <= single_below:
+        return duration
+    return max(lo, min(hi, duration / max(1, target_count)))
+
+
 def cmd_audio(args):
     """取音轨并切成小段，供 ASR 逐段转写。
 
@@ -1170,27 +1197,36 @@ def cmd_audio(args):
     audio_path = os.path.join(args.out, "audio.m4a")
     base = [src.ff, "-hide_banner", "-loglevel", "error"] + src.input_args(src_url)
     ok = False
+    err_tail = b""
     if not (os.path.isfile(audio_path) and os.path.getsize(audio_path) > 65536):
         subprocess.run(base + ["-i", src_url, "-vn", "-c:a", "copy", "-y", audio_path],
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
         ok = os.path.isfile(audio_path) and os.path.getsize(audio_path) > 65536
         if not ok:
             # 有些音轨是 opus/ec3，直接转 aac
-            subprocess.run(base + ["-i", src_url, "-vn", "-c:a", "aac", "-b:a", "96k",
-                                   "-y", audio_path],
-                           stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+            p = subprocess.run(base + ["-i", src_url, "-vn", "-c:a", "aac", "-b:a", "96k",
+                                       "-y", audio_path],
+                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+            err_tail = p.stderr or b""
             ok = os.path.isfile(audio_path) and os.path.getsize(audio_path) > 65536
     else:
         ok = True
     if not ok:
-        raise RuntimeError("AUDIO_DOWNLOAD_FAILED")
+        err = err_tail.decode("utf-8", "ignore").strip()
+        # 源本身没有音轨时 ffmpeg 报「输出文件不含任何流」——这和下载失败是两件事
+        if "does not contain any stream" in err:
+            raise RuntimeError(
+                "NO_AUDIO_TRACK: 这个源没有音轨 —— 画面正常，但没有可转写的声音。"
+            )
+        raise RuntimeError("AUDIO_DOWNLOAD_FAILED: " + (err[-300:] or "ffmpeg 未能提取音轨"))
 
     for f in os.listdir(args.out):
         if f.startswith("seg_") and f.endswith(".wav"):
             os.remove(os.path.join(args.out, f))
 
     dur = duration_of(src.ff, audio_path)
-    seg = max(5.0, args.segment)
+    # --segment 0（默认）表示自适应：切片长度由总长决定；显式给正值则完全按调用方来。
+    seg = pick_segment(dur) if not args.segment or args.segment <= 0 else max(5.0, args.segment)
 
     # 先转成裸 PCM，再自己拼标准 44 字节 WAV 头。
     # ffmpeg 的 wav 封装会插入 LIST/INFO 块，导致 'data' 偏移不是 36、
@@ -1426,7 +1462,8 @@ def main():
 
     au = sub.add_parser("audio")
     au.add_argument("video")
-    au.add_argument("--segment", type=float, default=30)
+    au.add_argument("--segment", type=float, default=0,
+                    help="切片长度（秒）；0（默认）= 按视频总长自适应")
     au.add_argument("--rate", type=int, default=16000)
     au.add_argument("--out", required=True)
 

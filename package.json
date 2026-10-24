@@ -1,14 +1,15 @@
 {
   "name": "dsh-video-read-learn",
-  "version": "0.9.0",
-  "private": true,
+  "version": "0.9.1",
   "description": "DSH 插件 · 视频精读：抽帧、提取字幕、音频转写三通道，把视频读成可简易参考的流程",
   "type": "module",
   "main": "index.js",
   "exports": {
     ".": "./index.js",
+    "./cordis.patch.yml": "./cordis.patch.yml",
     "./locale/*.json": "./locale/*.json",
-    "./icon": "./icon.svg"
+    "./icon": "./icon.svg",
+    "./package.json": "./package.json"
   },
   "files": [
     "index.js",
@@ -18,8 +19,26 @@
     "locale/*.json",
     "icon.svg",
     "README.md",
-    "CHANGELOG.md"
+    "CHANGELOG.md",
+    "LICENSE"
   ],
+  "engines": {
+    "node": ">=22.19",
+    "dsh": ">=0.2.1-rc.2 <0.3.0"
+  },
+  "author": "Xeue3n <337643968+Xeue3n@users.noreply.github.com>",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Xeue3n/dsh-video-read-learn.git"
+  },
+  "homepage": "https://github.com/Xeue3n/dsh-video-read-learn#readme",
+  "bugs": {
+    "url": "https://github.com/Xeue3n/dsh-video-read-learn/issues"
+  },
+  "publishConfig": {
+    "access": "public",
+    "registry": "https://registry.npmjs.org/"
+  },
   "dsh": {
     "bundle": {
       "patch": "./cordis.patch.yml"
@@ -27,6 +46,8 @@
   },
   "keywords": [
     "dsh-plugin",
+    "deepseek-harness",
+    "dsh",
     "bilibili",
     "video",
     "asr",

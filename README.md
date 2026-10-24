@@ -1,6 +1,6 @@
 # dsh-video-read-learn · 视频精读
 
-**v0.9.0** ｜ 11 个工具 ｜ 三条信息通道
+**v0.9.1** ｜ 11 个工具 ｜ 三条信息通道
 
 > **在线源目前仅支持哔哩哔哩（B站）。**
 > 本地视频文件可以直接分析；但网页链接只解析 B站——YouTube、抖音、其他站点的链接现在都不支持，
@@ -388,6 +388,33 @@ video_sweep { video, start: 0, end: 240, step: 15 }   →  1 张拼图
 - ffmpeg：优先 `imageio_ffmpeg` 自带的，其次 PATH
 
 解释器探测：`pythonPath` 配置 → `DSH_VIDEO_PYTHON` → `$DSH_HOME/dsh-runtimes/*/dependencies/python/python.exe` → `~/.dsh/dsh-runtimes/...` → PATH。
+
+### 装 ffmpeg
+
+推荐把 `imageio_ffmpeg` 装进 DSH 自己的 Python —— 它自带 ffmpeg 二进制，不用改 PATH：
+
+```sh
+<解释器绝对路径> -m pip install imageio_ffmpeg
+```
+
+Windows 桌面端通常是：
+
+```powershell
+& "$env:USERPROFILE\.dsh\dsh-runtimes\dsh-primary-runtime\dependencies\python\python.exe" -m pip install imageio_ffmpeg
+```
+
+装完跑一次 `video_probe` 验证，返回里的 `ffmpeg` 字段就是实际使用的二进制路径。
+
+插件**默认不自行安装依赖**（不改动用户的运行环境）。确实希望启动时自动补装，在 profile 的 `cordis.patch.yml` 里显式打开：
+
+```yaml
+- id: dsh-video-read-learn
+  name: dsh-video-read-learn
+  config:
+    autoInstallFfmpeg: true
+```
+
+缺失时启动日志会给出可直接复制的安装命令。
 
 ## 许可
 
