@@ -28,6 +28,12 @@
 - `package.json` 补全 `author` / `repository` / `homepage` / `bugs` / `engines` / `publishConfig`，移除 `private`，`exports` 补 `./cordis.patch.yml` 与 `./package.json`，`files` 补 `LICENSE`。
 - README 增「装 ffmpeg」小节，写清推荐安装方式与 `autoInstallFfmpeg` 开关。
 
+### 文档
+
+- 发行物不再夹带面向模型的行为训导：工具描述、返回值 `note` / `advice` / `cross_check`、`content_mode.advice` 只陈述能力与边界，不写行为指令。
+- 参数数值的描述统一为「不一定可读」——这是源分辨率决定的可辨识性问题，与数值精度无关。
+- README 移除展示性版本号与工具计数：版本只由 `package.json` 决定，避免发版时多处同步。
+
 ### 取舍
 
 - 默认开启 ASR 会让长视频上的 `video_outline` 变慢（转写本身耗时）；不需要时传 `withAsr: false` 退回「只读画面 + B站字幕」。
