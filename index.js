@@ -586,6 +586,36 @@ function textWithin(rows, start, end) {
 }
 
 /**
+ * 两路文本（字幕 vs 音频转写）的一致性。
+ *
+ * 中文没有词边界，用字符二元组 Jaccard 做粗比对：整段字面重合度高说明两源相互印证；
+ * 低分不代表谁错，只代表这处需要画面仲裁——ASR 本来就会有错字。
+ * 任一侧为空时返回 null（无从比对，不是「一致」）。
+ */
+function textAgreement(a, b) {
+  const norm = (s) => String(s || "").replace(/[\s\p{P}\p{S}]/gu, "");
+  const x = norm(a);
+  const y = norm(b);
+  if (!x || !y) return null;
+  if (x === y) return { score: 1, status: "agree" };
+  const grams = (s) => {
+    const set = new Set();
+    for (let i = 0; i < s.length - 1; i += 1) set.add(s.slice(i, i + 2));
+    if (set.size === 0) set.add(s);
+    return set;
+  };
+  const gx = grams(x);
+  const gy = grams(y);
+  let inter = 0;
+  for (const g of gx) if (gy.has(g)) inter += 1;
+  const score = inter / (gx.size + gy.size - inter);
+  return {
+    score: Math.round(score * 100) / 100,
+    status: score >= 0.5 ? "agree" : "divergent",
+  };
+}
+
+/**
  * 启动自检：确认运行环境里能找到 ffmpeg。
  *
  * 发行版默认**不改动用户环境**——只检测，缺失时留一条可操作的警告。
@@ -1329,7 +1359,16 @@ export function apply(ctx, config = {}) {
           asr_segment_count: { type: "number" },
           asr_reason: { type: "string" },
           template: { type: "string" },
-          cross_check: { type: "string" },
+          cross_check: {
+            type: "object",
+            properties: {
+              compared: { type: "number" },
+              agreed: { type: "number" },
+              divergent: { type: "array" },
+              one_sided: { type: "array" },
+              note: { type: "string" },
+            },
+          },
           reason: { type: "string" },
         },
         required: ["status"],
@@ -1397,6 +1436,8 @@ export function apply(ctx, config = {}) {
         const sections = plan.map((p, i) => {
           const segFrames = files.filter((f) => f.at >= p.start && f.at < p.end);
           const segEvents = (report.suggested || []).filter((e) => e.at >= p.start && e.at < p.end);
+          const subtitleText = textWithin(sub?.segments, p.start, p.end);
+          const asrText = textWithin(asrSegs, p.start, p.end);
           return {
             index: i + 1,
             start: p.start,
@@ -1404,11 +1445,18 @@ export function apply(ctx, config = {}) {
             level: p.level,
             frames: segFrames.map((f) => f.file),
             events: segEvents.slice(0, 8).map((e) => ({ at: e.at, kind: e.kind, span: e.span })),
-            // 画面（frames/events）在前，两个辅助文本源并排在后
-            subtitle: textWithin(sub?.segments, p.start, p.end),
-            asr: textWithin(asrSegs, p.start, p.end),
+            // 画面证据（frames / events）在前，两路文本各带自己的一致性判定在后
+            subtitle: subtitleText,
+            asr: asrText,
+            agreement: textAgreement(subtitleText, asrText),
           };
         });
+
+        const compared = sections.filter((s) => s.agreement !== null);
+        const divergent = compared.filter((s) => s.agreement.status === "divergent");
+        const oneSided = sections.filter(
+          (s) => s.agreement === null && (s.subtitle !== null || s.asr !== null),
+        );
 
         return {
           status: "ok",
@@ -1422,8 +1470,20 @@ export function apply(ctx, config = {}) {
           asr_segment_count: asrSegs.length,
           ...(asr && asr.status !== "ok" ? { asr_reason: asr.reason } : {}),
           template: join(HERE, "templates", "TUTORIAL_DOC.md"),
-          cross_check:
-            "字幕与音频转写是两条独立的辅助源，都可能有错；两者不一致时以画面证据为准。",
+          cross_check: {
+            compared: compared.length,
+            agreed: compared.length - divergent.length,
+            divergent: divergent.map((s) => ({
+              index: s.index,
+              start: s.start,
+              end: s.end,
+              score: s.agreement.score,
+            })),
+            one_sided: oneSided.map((s) => s.index),
+            note:
+              "字幕与音频转写按字符重合度比对。divergent 段落两源说法不一致，" +
+              "该段的 frames 是仲裁用的画面证据；one_sided 表示该段只有一路文本可用。",
+          },
         };
       } catch (e) {
         return errOut(e);
