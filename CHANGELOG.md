@@ -4,15 +4,18 @@
 
 ### 新增
 
-- **`video_outline` 并行接入音频转写**：新增 `withAsr`（默认 `true`）与 `asrSegment`。`sections` 里每段多了 `asr` 字段，与 `subtitle` 并列。
+- **`video_outline` 并行接入音频转写**：新增 `withAsr`（默认 `true`）与 `asrSegment`（默认 15 秒，固定切片以保证与 section 对齐）。`sections` 里每段多了 `asr` 字段，与 `subtitle` 并列。
 - **ASR 切片自适应**：`--segment 0`（默认）由视频总长决定 —— **不超过 5 分钟不切**，整段一次读完（每段都要重新加载一次识别模型，切开反而更慢；本地 whisper 本来就会自己按句输出时间戳）；**更长才切片并并发**，每段 `clamp(总长 / 60, 15, 90)` 秒。实测 90s → 1 段，400s → 15s × 27 段，724s → 15s × 49 段，3600s → 60s × 61 段，7200s → 90s × 81 段。
 - **多段并发转写**：每段独立文件、独立进程，默认 3 路并发（`concurrency` 可调，上限 8）。结果按时间排序后合成 `text` 全文与 `segments` 时间戳分段一起返回。
 - 抽出内部函数 `doAsrCore`（返回全量分段）与 `doAsr`（分页包装）；`video_asr` 改为调用它们，对外行为不变。
+- **`video_outline` 的字幕/音频交叉核对**：两路文本按段做字符二元组 Jaccard 比对，每段多出 `agreement{score,status}`；顶层 `cross_check` 汇总 `compared / agreed / divergent / one_sided`，分歧段保留原处 `frames` 作为画面仲裁。任一侧为空返回 `null`，不等同于「一致」。阈值 0.5 实测：仅标点差异 0.57 判一致，漏半句 0.47、错一字 0.33 均判分歧。
 
 ### 修复
 
 - **无音轨被误报成下载失败**：源本身没有音轨时 `cmd_audio` 一律抛 `AUDIO_DOWNLOAD_FAILED`，看起来像网络问题。现在读取 ffmpeg 的 stderr 加以区分，报 `NO_AUDIO_TRACK: 这个源没有音轨 —— 画面正常，但没有可转写的声音。`
 - **缺 ffmpeg 时全部工具一起失效，且报错不可操作**：`find_ffmpeg` 的三条定位路径（显式参数 / `imageio_ffmpeg` / PATH）任一满足即可，但三者皆空时 probe / scan / fetch / frames / caption / compose / asr 全部在 `Source.__init__` 处统一失败，只抛一句 `FFMPEG_NOT_FOUND`，看不出该装什么、装到哪个解释器。现在错误信息直接给出可复制的 pip 命令，并带上当前解释器的绝对路径。
+- **ASR 分段过粗导致 section 级对齐失效**：`video_outline` 的 `asrSegment` 默认走自适应，短于 5 分钟整段不切，只产出一条 `{start:0, end:N}`；而 `textWithin` 按区间匹配，于是每个 section 都拿到同一份全文。默认改为 15 秒。
+- **字幕采样过疏漏整句**：`video_caption` 的 `--step` 固定 5 秒，而单句字幕通常只停 2–3 秒，采样点没落上就整句消失（实测漏掉「终于结束了」与「你是谁呀」）。改为 `0` = 自适应 `clamp(总长/120, 1, 5)` 秒。
 
 ### 变更
 
