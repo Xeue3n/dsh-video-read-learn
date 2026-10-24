@@ -30,6 +30,32 @@ let cachedCookie = null;
 // 宿主语音后端状态：一旦准备失败，本次会话不再重试，避免每次调用空等
 let speechState = "unknown";
 
+/**
+ * 杀掉整棵进程树。
+ *
+ * 只 kill 直接子进程是不够的：python 引擎自己会拉起 ffmpeg，杀掉 python 后
+ * ffmpeg 还在跑，会继续攥着音频文件的写句柄——坏缓存于是既删不掉、也写不
+ * 完，下一次调用仍然撞在同一个残缺文件上。Windows 上用 taskkill /T 收尾。
+ */
+function killTree(pid) {
+  if (!pid) return;
+  try {
+    if (process.platform === "win32") {
+      const k = spawn("taskkill", ["/PID", String(pid), "/T", "/F"], {
+        windowsHide: true,
+        stdio: "ignore",
+      });
+      k.on("error", () => {});
+    } else {
+      try {
+        process.kill(-pid, "SIGKILL");
+      } catch {
+        process.kill(pid, "SIGKILL");
+      }
+    }
+  } catch {}
+}
+
 function run(cmd, args, { timeoutMs = 180_000, cwd, env } = {}) {
   return new Promise((resolve) => {
     let out = "";
@@ -44,6 +70,8 @@ function run(cmd, args, { timeoutMs = 180_000, cwd, env } = {}) {
     const timer = setTimeout(() => {
       if (settled) return;
       settled = true;
+      // 连孙进程一起收掉：否则 ffmpeg 会带着文件写句柄留在后台（见 killTree）。
+      killTree(child.pid);
       try {
         child.kill();
       } catch {}

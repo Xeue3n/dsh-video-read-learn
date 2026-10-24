@@ -212,8 +212,12 @@ class Source:
 
 
 def duration_of(ff, path):
-    p = subprocess.run([ff, "-hide_banner", "-i", path], stderr=subprocess.PIPE,
-                       stdout=subprocess.DEVNULL)
+    # 探测也得有上限：远程源或损坏容器都可能让 ffmpeg 挂住不退。
+    try:
+        p = subprocess.run([ff, "-hide_banner", "-i", path], stderr=subprocess.PIPE,
+                           stdout=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return 0.0
     m = re.search(rb"Duration: (\d+):(\d+):(\d+)", p.stderr)
     if not m:
         return 0.0
@@ -222,8 +226,11 @@ def duration_of(ff, path):
 
 
 def video_size(ff, path):
-    p = subprocess.run([ff, "-hide_banner", "-i", path], stderr=subprocess.PIPE,
-                       stdout=subprocess.DEVNULL)
+    try:
+        p = subprocess.run([ff, "-hide_banner", "-i", path], stderr=subprocess.PIPE,
+                           stdout=subprocess.DEVNULL, timeout=120)
+    except (OSError, subprocess.SubprocessError):
+        return (0, 0)
     m = re.search(rb"Stream #0:0.*?(\d{2,5})x(\d{2,5})", p.stderr, re.S)
     if not m:
         return (0, 0)
@@ -1185,6 +1192,67 @@ def pick_segment(duration, target_count=60, lo=15.0, hi=90.0, single_below=300.0
     return max(lo, min(hi, duration / max(1, target_count)))
 
 
+# --- 音轨缓存与完整性 -----------------------------------------------------
+# 只看文件大小会放过「下载到一半」的残片：ffmpeg 从远程 URL 直写时，连接中途
+# 断开会留下一个大小过线、却没有 moov 索引的文件；之后每次解码都必然失败，而
+# 且因为 size 过线，下一次调用还会把它当有效缓存直接复用——这个视频的转写就
+# 永久坏掉了，用户看到的是「一直转、最后没结果」。
+AUDIO_MIN_BYTES = 65536
+AUDIO_DOWNLOAD_TIMEOUT = 300     # 远程音轨下载硬上限（秒）；配合 -rw_timeout 把「假死」变成快速失败
+AUDIO_PROBE_TIMEOUT = 60         # 完整性探测上限（秒）
+AUDIO_PCM_TIMEOUT = 180          # 解成裸 PCM 的上限（秒）
+
+
+def audio_probe(ff, path):
+    """这个音轨文件现在到底能不能解码。
+
+    用 ffmpeg 打开并解 0.1 秒：容器损坏（缺 moov 等）在 demux 阶段就会非 0
+    退出，不必整段解码就能判定。返回 False 表示「不能用，应该重下」。
+    """
+    try:
+        if not os.path.isfile(path) or os.path.getsize(path) <= AUDIO_MIN_BYTES:
+            return False
+        p = subprocess.run(
+            [ff, "-hide_banner", "-loglevel", "error", "-v", "error",
+             "-i", path, "-t", "0.1", "-f", "null", "-"],
+            stdout=subprocess.DEVNULL, stderr=subprocess.PIPE,
+            timeout=AUDIO_PROBE_TIMEOUT,
+        )
+        return p.returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        return False
+
+
+def drop_file(path):
+    """尽力删掉坏文件，返回是否真的删掉了。
+
+    删不掉通常是句柄被别的进程占着（典型是上一次超时留下的孤儿 ffmpeg）。
+    调用方据此决定「换个文件名重下」而不是在同一个障碍上反复撞。
+    """
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+        return True
+    except OSError:
+        return False
+
+
+def run_ffmpeg(cmd, timeout):
+    """跑一次 ffmpeg，超时/异常都折算成失败返回，绝不无限等待。
+
+    以前这里是不带 timeout 的 subprocess.run：远程流卡住就会一直挂着，
+    外层只能等到工具级 900 秒上限，表现为「调用工具时一直转圈」。
+    """
+    try:
+        p = subprocess.run(cmd, stdout=subprocess.DEVNULL,
+                           stderr=subprocess.PIPE, timeout=timeout)
+        return p.returncode, p.stderr or b""
+    except subprocess.TimeoutExpired as e:
+        return -1, (e.stderr or b"") + b"\nTIMEOUT"
+    except OSError as e:
+        return -2, str(e).encode("utf-8", "ignore")
+
+
 def cmd_audio(args):
     """取音轨并切成小段，供 ASR 逐段转写。
 
@@ -1200,22 +1268,38 @@ def cmd_audio(args):
         raise RuntimeError("NO_AUDIO_TRACK: 这集没有单独的音轨（或不是 B站源）")
 
     audio_path = os.path.join(args.out, "audio.m4a")
-    base = [src.ff, "-hide_banner", "-loglevel", "error"] + src.input_args(src_url)
-    ok = False
+    # 远程音轨必须带网络超时：B站 CDN 偶尔「不发数据也不断开」，ffmpeg 默认会
+    # 一直等下去（实测留下过挂了两小时的 ffmpeg 进程），整个工具调用就卡在
+    # 「调用工具中」转圈，最后只剩一个抱着文件句柄的孤儿进程。
+    net_args = []
+    if src.kind == "bili":
+        net_args = ["-rw_timeout", "20000000",     # 单次读写 20 秒无进展即放弃
+                    "-reconnect", "1",
+                    "-reconnect_streamed", "1",
+                    "-reconnect_delay_max", "3"]
+    base = [src.ff, "-hide_banner", "-loglevel", "error"] + net_args + src.input_args(src_url)
     err_tail = b""
-    if not (os.path.isfile(audio_path) and os.path.getsize(audio_path) > 65536):
-        subprocess.run(base + ["-i", src_url, "-vn", "-c:a", "copy", "-y", audio_path],
-                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-        ok = os.path.isfile(audio_path) and os.path.getsize(audio_path) > 65536
-        if not ok:
-            # 有些音轨是 opus/ec3，直接转 aac
-            p = subprocess.run(base + ["-i", src_url, "-vn", "-c:a", "aac", "-b:a", "96k",
-                                       "-y", audio_path],
-                               stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
-            err_tail = p.stderr or b""
-            ok = os.path.isfile(audio_path) and os.path.getsize(audio_path) > 65536
-    else:
-        ok = True
+
+    # 缓存命中也要验完整性，不能只看大小（见 audio_probe 的注释）。
+    ok = audio_probe(src.ff, audio_path)
+    if not ok:
+        if not drop_file(audio_path):
+            # 坏文件被别的进程攥着删不掉（典型是上次超时留下的孤儿 ffmpeg 还
+            # 开着写句柄）。换个文件名下载，别在同一个障碍上反复撞。
+            audio_path = os.path.join(args.out, "audio.fresh.m4a")
+            drop_file(audio_path)
+        # 逐档降级：先原样 copy（最快），不行再转 aac（兼容 opus/ec3 音轨）。
+        for extra in (["-vn", "-c:a", "copy"],
+                      ["-vn", "-c:a", "aac", "-b:a", "96k"]):
+            code, err_tail = run_ffmpeg(
+                base + ["-i", src_url] + extra + ["-y", audio_path],
+                AUDIO_DOWNLOAD_TIMEOUT,
+            )
+            # 退出码为 0 还不够：连接中途断开时 ffmpeg 仍可能写出部分数据。
+            if code == 0 and audio_probe(src.ff, audio_path):
+                ok = True
+                break
+            drop_file(audio_path)
     if not ok:
         err = err_tail.decode("utf-8", "ignore").strip()
         # 源本身没有音轨时 ffmpeg 报「输出文件不含任何流」——这和下载失败是两件事
@@ -1223,7 +1307,10 @@ def cmd_audio(args):
             raise RuntimeError(
                 "NO_AUDIO_TRACK: 这个源没有音轨 —— 画面正常，但没有可转写的声音。"
             )
-        raise RuntimeError("AUDIO_DOWNLOAD_FAILED: " + (err[-300:] or "ffmpeg 未能提取音轨"))
+        raise RuntimeError(
+            "AUDIO_DOWNLOAD_FAILED: 音轨没下完整或无法写入（残片已清除，可直接重试）："
+            + audio_path + "；" + (err[-300:] or "ffmpeg 未能提取音轨")
+        )
 
     for f in os.listdir(args.out):
         if f.startswith("seg_") and f.endswith(".wav"):
@@ -1237,11 +1324,22 @@ def cmd_audio(args):
     # ffmpeg 的 wav 封装会插入 LIST/INFO 块，导致 'data' 偏移不是 36、
     # RIFF size 也不等于长度减 8，DSH 的 validateWave 会直接拒收。
     pcm_path = os.path.join(args.out, "audio.pcm")
-    subprocess.run([src.ff, "-hide_banner", "-loglevel", "error", "-i", audio_path,
-                    "-ar", str(args.rate), "-ac", "1", "-f", "s16le", "-y", pcm_path],
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    drop_file(pcm_path)
+    code, pcm_err = run_ffmpeg(
+        [src.ff, "-hide_banner", "-loglevel", "error", "-i", audio_path,
+         "-ar", str(args.rate), "-ac", "1", "-f", "s16le", "-y", pcm_path],
+        AUDIO_PCM_TIMEOUT,
+    )
     if not (os.path.isfile(pcm_path) and os.path.getsize(pcm_path) > 1024):
-        raise RuntimeError("AUDIO_DECODE_FAILED")
+        # 解不开的音轨留着没有意义：删掉它，下一次调用才会重新下载，
+        # 而不是永远撞同一堵墙（这正是「再试一次还是卡住」的由来）。
+        drop_file(audio_path)
+        detail = pcm_err.decode("utf-8", "ignore").strip()[-200:]
+        raise RuntimeError(
+            "AUDIO_DECODE_FAILED: 音轨无法解码（多半是上次没下完整）——已清除该缓存，"
+            "重试一次会自动重新下载。文件：" + audio_path
+            + (("；ffmpeg: " + detail) if detail else "")
+        )
     with open(pcm_path, "rb") as fh:
         pcm_all = fh.read()
 
