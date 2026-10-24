@@ -352,19 +352,20 @@ def detect_mode(series, stats, n):
         mode = "operation"
         advice = (
             "软件操作演示：界面框架长期静止、面板内容频繁变化。"
-            "coverage_plan 给出分档采样计划，suggested 给出关键时刻。"
+            "coverage_plan 分档抽帧适合看整体流程，suggested 里的关键时刻适合做原分辨率裁切。"
         )
     elif len(cuts) >= 8:
         mode = "slides"
         advice = (
             "讲解/剪辑类：没有静止的界面框架，画面按整屏切换推进（固定场景换内容、换截图）。"
-            "scene_cuts 给出整屏切换点，文字信息通常在整屏里。"
+            "密度网格抽帧会落在切换空档里；切换点以 scene_cuts 为准，每次切换一帧 full。"
+            "文字信息通常就在整屏里。"
         )
     else:
         mode = "mixed"
         advice = (
             "混合模式：界面事件与整屏切换两类信号相当。"
-            "coverage_plan 给出分档采样计划，scene_cuts 给出整屏切换点，两种切分方式都适用于本片。"
+            "coverage_plan 适合先做分档粗扫判断内容，之后按切换点切分或按事件加密都可用。"
         )
     return mode, {
         "mode": mode,

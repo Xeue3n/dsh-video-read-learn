@@ -652,7 +652,7 @@ export function apply(ctx, config = {}) {
       "一条命令从链接直接拿到关键画面：先自动扫描界面变化事件，再对最值得看的时刻抽 UI 裁切，返回图片。" +
       "输出面向快速通读；需要精调某个时刻时用 video_frames。" +
       "直链由工具自动解析，无需手动准备。" +
-      "还原的是操作流程（顺序、在哪一步开菜单、哪一步加修改器），而非参数数值——480p 下参数数字不保证可读。",
+      "用途定位是操作思路与流程（先做什么、后做什么、在哪一步开菜单、哪一步加修改器），不是抄参数数值——480p 足以看清流程，参数框里的数字是近似值。",
     parameters: {
       type: "object",
       properties: {
@@ -749,7 +749,7 @@ export function apply(ctx, config = {}) {
           files: imgs.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note: "原分辨率裁切图，非 OCR 文本；图中的数值不保证准确。",
+          note: "原分辨率裁切图，非 OCR 文本；图中的数值为近似读数，看不清的内容无法从画面确认。",
           advice: short >= 700
             ? "清晰度够读界面文字。"
             : `源短边 ${short}px，参数数值可能读不准；要逐字核对需要更高清晰度的源。`,
@@ -766,7 +766,8 @@ export function apply(ctx, config = {}) {
     name: "video_sweep",
     description:
       "按区间和步长一次抽一批帧，并拼成带时间标签的大图（默认 4×4）。" +
-      "属于「粗扫 / 分档加密」环节：step 通常取 video_scan 的 coverage_plan 里每段的 suggest_step（低/中/高三档约 90 / 35 / 15 秒）。" +
+      "属于「粗扫 / 分档加密」环节，step 对应 video_scan 的 coverage_plan 里每段的 suggest_step：低密度 90 秒保覆盖、中密度 35、高密度 15。" +
+      "一张拼图看 16 帧，用于看整段在做什么，而不是逐个参数。" +
       "在线源逐帧定位，每帧约 0.5 秒。",
     parameters: {
       type: "object",
@@ -1659,7 +1660,7 @@ export function apply(ctx, config = {}) {
           files: all.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note: "原分辨率裁切图，非 OCR 文本；图中的数值不保证准确。",
+          note: "原分辨率裁切图，非 OCR 文本；图中的数值为近似读数，看不清的内容无法从画面确认。",
         };
       } catch (e) {
         return errOut(e);
