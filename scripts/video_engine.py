@@ -535,7 +535,7 @@ def cmd_probe(args):
         "源分辨率足以连参数数值一起读。"
         if readable else
         "源短边仅 %dpx：菜单、修改器名、物体名、模式切换这些粗粒度信息仍然可读，"
-        "足够还原操作流程；但参数框里的数字不保证读准。" % short
+        "足够还原操作流程；但参数框里的数字不一定可读。" % short
     )
     print(json.dumps(out, ensure_ascii=False))
 

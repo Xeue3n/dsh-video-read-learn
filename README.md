@@ -347,7 +347,7 @@ video_sweep { video, start: 0, end: 240, step: 15 }   →  1 张拼图
 
 | 限制 | 后果 | 绕法 |
 |---|---|---|
-| **没有登录凭据** | 一个原因，两处后果：① 清晰度封顶 480p，UI 文字 6–8 px，**参数数值读不准**——像素里就没有，超分/锐化都救不回；② 字幕接口不下发（`need_login_subtitle: true`，`subtitles: []`） | 提供一次 `SESSDATA`（浏览器登录 B站后的同名 Cookie），清晰度与字幕**同时**解锁 |
+| **没有登录凭据** | 一个原因，两处后果：① 清晰度封顶 480p，UI 文字 6–8 px，**参数数值不可读**——像素里就没有，超分/锐化都救不回；② 字幕接口不下发（`need_login_subtitle: true`，`subtitles: []`） | 提供一次 `SESSDATA`（浏览器登录 B站后的同名 Cookie），清晰度与字幕**同时**解锁 |
 | 直链带 `deadline`（约 2 小时） | 长时间任务可能用到过期地址 | 每次 grab/scan 都重新解析，天然规避 |
 | 宿主 SenseVoice 要两个插件同时配好 | 缺 `subprocess` 或 `dataRoot` → provider 不注册，调用方只看到 "Prepare the local speech provider before recording" | 见「音频转写」的 patch 片段 |
 | SenseVoice 只认严格 44 字节 WAV 头 | ffmpeg 的 wav 带 LIST 块，`data` 偏移不是 36，直接判 "Invalid speech WAV" | 引擎从裸 PCM 拼头（已内置） |

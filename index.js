@@ -652,7 +652,7 @@ export function apply(ctx, config = {}) {
       "一条命令从链接直接拿到关键画面：先自动扫描界面变化事件，再对最值得看的时刻抽 UI 裁切，返回图片。" +
       "输出面向快速通读；需要精调某个时刻时用 video_frames。" +
       "直链由工具自动解析，无需手动准备。" +
-      "用途定位是操作思路与流程（先做什么、后做什么、在哪一步开菜单、哪一步加修改器），不是抄参数数值——480p 足以看清流程，参数框里的数字是近似值。",
+      "用途定位是操作思路与流程（先做什么、后做什么、在哪一步开菜单、哪一步加修改器），不是抄参数数值——480p 足以看清流程，但参数框里的数字不一定可读。",
     parameters: {
       type: "object",
       properties: {
@@ -749,10 +749,10 @@ export function apply(ctx, config = {}) {
           files: imgs.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note: "原分辨率裁切图，非 OCR 文本；图中的数值为近似读数，看不清的内容无法从画面确认。",
+          note: "原分辨率裁切图，非 OCR 文本；受源分辨率限制，图中的数值不一定可读。",
           advice: short >= 700
             ? "清晰度够读界面文字。"
-            : `源短边 ${short}px，参数数值可能读不准；要逐字核对需要更高清晰度的源。`,
+            : `源短边 ${short}px，参数数值不一定可读；逐字核对需要更高清晰度的源。`,
         };
       } catch (e) {
         return errOut(e);
@@ -1660,7 +1660,7 @@ export function apply(ctx, config = {}) {
           files: all.map((m) => m.file),
           ...(skipped.length ? { oversized: skipped } : {}),
           frames,
-          note: "原分辨率裁切图，非 OCR 文本；图中的数值为近似读数，看不清的内容无法从画面确认。",
+          note: "原分辨率裁切图，非 OCR 文本；受源分辨率限制，图中的数值不一定可读。",
         };
       } catch (e) {
         return errOut(e);
