@@ -153,11 +153,31 @@ async function resolveCookie(config) {
   return cachedCookie;
 }
 
+/**
+ * `--page` 定义在引擎的**顶层** argparse 里，所以它必须排在子命令之前。
+ * 各工具都是按「子命令 + 位置参数 + 可选旗标」拼 argv 的，`--page` 自然落在
+ * 末尾（`probe BV1xx --page 2`），argparse 会把它当未知参数直接失败。
+ * 这里统一把它前移，调用方就不用各自操心顺序。
+ */
+function hoistGlobalArgs(args) {
+  const body = [];
+  const global = [];
+  for (let i = 0; i < args.length; i += 1) {
+    if (args[i] === "--page") {
+      if (i + 1 < args.length) global.push("--page", String(args[i + 1]));
+      i += 1;
+      continue;
+    }
+    body.push(args[i]);
+  }
+  return [...global, ...body];
+}
+
 async function engine(args, config, opts) {
   const py = await resolvePython(config);
   const cookie = await resolveCookie(config);
   const env = cookie ? { BILI_SESSDATA: cookie } : undefined;
-  const r = await run(py, [ENGINE, ...args], { timeoutMs: opts?.timeoutMs ?? 180_000, env });
+  const r = await run(py, [ENGINE, ...hoistGlobalArgs(args)], { timeoutMs: opts?.timeoutMs ?? 180_000, env });
   if (r.code !== 0) {
     const detail = (r.stderr || r.stdout || "").trim().slice(-1200);
     throw new Error(`ENGINE_FAILED(${r.code}): ${detail || "无输出"}`);

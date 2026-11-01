@@ -1,5 +1,11 @@
 # 变更记录
 
+## 未发布
+
+### 修复
+
+- **传 `biliPage` 会让工具整条命令失败**：`--page` 定义在引擎顶层的 argparse 上，而各工具拼的是「子命令 + 位置参数 + 旗标」，`--page` 因此落在子命令之后（`probe <video> --page 2`），argparse 直接报 `unrecognized arguments: --page`。`video_probe`、`video_scan`、`video_frames`、`video_sweep`、`video_caption`、`video_compose`、`video_asr`、`video_outline` 只要指定分P就全部不可用。改为在 `engine()` 里统一把全局旗标前移到子命令之前，调用方不必各自关心顺序。
+
 ## 0.9.1 — 2026-10-24
 
 ### 新增
