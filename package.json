@@ -1,6 +1,6 @@
 {
   "name": "dsh-video-read-learn",
-  "version": "0.9.1",
+  "version": "0.9.1.1",
   "description": "DSH 插件 · 视频精读：抽帧、提取字幕、音频转写三通道，把视频读成可简易参考的流程",
   "type": "module",
   "main": "index.js",
